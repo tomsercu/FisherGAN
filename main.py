@@ -34,8 +34,7 @@ parser.add_argument('--cuda'  , action='store_true', help='enables cuda')
 parser.add_argument('--ngpu'  , type=int, default=1, help='number of GPUs to use')
 parser.add_argument('--netG', default='', help="path to netG (to continue training)")
 parser.add_argument('--netD', default='', help="path to netD (to continue training)")
-parser.add_argument('--wdecay', type=float, default=1e-6,  help='wdecay value for Phi')
-parser.add_argument('--wdecayV', type=float, default=1e-3, help='wdecay value for v')
+parser.add_argument('--wdecay', type=float, default=0.000, help='wdecay value for Phi')
 parser.add_argument('--Diters', type=int, default=5, help='number of D iters per each G iter')
 parser.add_argument('--hiDiterStart'  , action='store_true', help='do many D iters at start')
 parser.add_argument('--noBN', action='store_true', help='use batchnorm or not (only for DCGAN)')
@@ -134,7 +133,7 @@ noise = torch.FloatTensor(opt.batchSize, nz, 1, 1)
 fixed_noise = torch.FloatTensor(opt.batchSize, nz, 1, 1).normal_(0, 1)
 one = torch.FloatTensor([1])
 mone = one * -1
-Lambda = torch.FloatTensor([0]) # lagrange multipliers
+alpha = torch.FloatTensor([0]) # lagrange multipliers
 
 if opt.cuda:
     netD.cuda()
@@ -142,18 +141,16 @@ if opt.cuda:
     input = input.cuda()
     one, mone = one.cuda(), mone.cuda()
     noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
-    Lambda = Lambda.cuda()
-Lambda = Variable(Lambda, requires_grad=True)
+    alpha = alpha.cuda()
+alpha = Variable(alpha, requires_grad=True)
 
 # setup optimizer
-paramsD = [{'params': netD.phi.parameters(),'weight_decay': opt.wdecay }, 
-           {'params': netD.v.parameters(),  'weight_decay': opt.wdecayV}]
 if opt.adam:
-    optimizerD = optim.Adam(paramsD,           lr=opt.lrD, betas=(opt.beta1, 0.999))
-    optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.999))
+    optimizerD = optim.Adam(netD.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999), weight_decay=opt.wdecay)
+    optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.999), weight_decay=opt.wdecay)
 else:
-    optimizerD = optim.RMSprop(paramsD,           lr = opt.lrD)
-    optimizerG = optim.RMSprop(netG.parameters(), lr = opt.lrG)
+    optimizerD = optim.RMSprop(netD.parameters(), lr = opt.lrD, weight_decay=opt.wdecay)
+    optimizerG = optim.RMSprop(netG.parameters(), lr = opt.lrG, weight_decay=opt.wdecay)
 
 gen_iterations = 0
 for epoch in range(opt.niter):
@@ -203,13 +200,13 @@ for epoch in range(opt.niter):
             E_P_f2, E_Q_f2 = (vphi_real**2).mean(), (vphi_fake**2).mean()
             constraint = (1 - (0.5*E_P_f2 + 0.5*E_Q_f2))
             # See Equation (9)
-            obj_D = E_P_f - E_Q_f + Lambda * constraint - opt.rho/2 * constraint**2
-            # max_w min_Lambda obj_D. Compute negative gradients, apply updates with negative sign.
+            obj_D = E_P_f - E_Q_f + alpha * constraint - opt.rho/2 * constraint**2
+            # max_w min_alpha obj_D. Compute negative gradients, apply updates with negative sign.
             obj_D.backward(mone)
             optimizerD.step()
-            # artisanal sgd. We minimze Lambda so Lambda <- Lambda + lr * (-grad)
-            Lambda.data += opt.rho * Lambda.grad.data
-            Lambda.grad.data.zero_()
+            # artisanal sgd. We minimze alpha so a <- a + lr * (-grad)
+            alpha.data += opt.rho * alpha.grad.data
+            alpha.grad.data.zero_()
 
         ############################
         # (2) Update G network
@@ -232,10 +229,10 @@ for epoch in range(opt.niter):
         IPM_denom = (0.5*E_P_f2.data[0] + 0.5*E_Q_f2.data[0]) ** 0.5
         IPM_ratio = IPM_enum / IPM_denom
         print(('[%d/%d][%d/%d][%d] IPM_enum: %.4f IPM_denom: %.4f IPM_ratio: %.4f '
-            'E_P_f: %.4f E_Q_f: %.4f E_P_(f^2): %.4f E_Q_(f^2): %.4f lambda: %.4f')
+               'E_P_f: %.4f E_Q_f: %.4f E_P_(f^2): %.4f E_Q_(f^2): %.4f')
             % (epoch, opt.niter, i, len(dataloader), gen_iterations,
             IPM_enum, IPM_denom, IPM_ratio,
-            E_P_f.data[0], E_Q_f.data[0], E_P_f2.data[0], E_Q_f2.data[0], Lambda.data[0]))
+            E_P_f.data[0], E_Q_f.data[0], E_P_f2.data[0], E_Q_f2.data[0]))
         if gen_iterations % 500 == 0:
             real_cpu = real_cpu.mul(0.5).add(0.5)
             vutils.save_image(real_cpu, '{0}/real_samples.png'.format(opt.experiment))
